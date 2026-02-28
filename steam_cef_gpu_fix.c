@@ -10,30 +10,27 @@
  *   No Steam window ever appears.
  *
  * Root cause:
- *   1. Chrome 126's seccomp sandbox blocks clone3(), which kernel 6.13+
- *      prefers over clone(). This breaks process spawning inside the sandbox.
- *   2. NULL function pointers in .bss (283 thunks found) are called during
- *      GPU initialization, causing SIGSEGV.
- *   3. Chrome's crashpad handler installs its own signal handlers that
- *      override any LD_PRELOAD-based handlers, so naive signal interception
- *      doesn't work.
+ *   libcef.so has ~283 function-pointer thunks that load an address from
+ *   .bss (zero-initialized) and jump to it. On affected kernel+driver
+ *   combinations, the constructors that should populate these pointers
+ *   fail silently, leaving them as NULL → SIGSEGV on call.
+ *
+ *   Chrome's crashpad crash reporter also installs its own signal handlers
+ *   that catch the fault and kill the process, so naive LD_PRELOAD signal
+ *   handling doesn't work — crashpad overrides it on startup.
  *
  * Fix (this library):
- *   1. Intercepts sigaction()/signal() to prevent crashpad from overriding
- *      our signal handlers for SIGSEGV, SIGTRAP, and SIGILL.
- *   2. SIGSEGV handler: when the GPU process calls/jumps to NULL or
- *      dereferences NULL, returns 0 from the faulting function instead
- *      of crashing.
- *   3. SIGTRAP/SIGILL handler: when NOTREACHED()/IMMEDIATE_CRASH() fires
- *      (int3/ud2 instructions), unwinds two stack frames to skip both the
- *      crash stub and its caller, avoiding infinite loops.
- *   4. Intercepts clone3() syscall → returns ENOSYS, forcing glibc's
- *      fallback to clone().
+ *   1. Install a SIGSEGV handler that returns 0 from NULL-pointer thunks
+ *      instead of crashing.
+ *   2. Intercept sigaction() to prevent crashpad from replacing our handler.
+ *   3. (Safety net) Handle SIGTRAP/SIGILL from NOTREACHED()/IMMEDIATE_CRASH()
+ *      assertions by unwinding two frames to avoid infinite loops.
+ *   4. (Safety net) Intercept clone3() → ENOSYS so glibc falls back to
+ *      clone(), which older seccomp sandboxes permit.
  *
  * Usage:
  *   gcc -shared -fPIC -o steam_cef_gpu_fix.so steam_cef_gpu_fix.c -ldl
- *   LD_PRELOAD=./steam_cef_gpu_fix.so steam
- *   (see install.sh for the full setup via custom Steam Runtime entry point)
+ *   LD_PRELOAD=$PWD/steam_cef_gpu_fix.so steam
  *
  * Tested on:
  *   - Ubuntu 24.04, kernel 6.17.0-14-generic
@@ -46,22 +43,20 @@
 #define _GNU_SOURCE
 #include <stdarg.h>
 #include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <ucontext.h>
 #include <dlfcn.h>
-#include <unistd.h>
 #include <stdint.h>
-#include <fcntl.h>
+#include <errno.h>
+#include <sys/syscall.h>
 #include <errno.h>
 #include <sys/syscall.h>
 
-/* ---------- state ---------- */
 static int handlers_locked = 0;
 
-/* ---------- SIGSEGV handler ---------- */
+/* ── SIGSEGV: core fix ─────────────────────────────────────────────── */
 static void sigsegv_handler(int sig, siginfo_t *info, void *ucontext) {
+    (void)sig;
     ucontext_t *ctx = (ucontext_t *)ucontext;
     uint64_t rip = ctx->uc_mcontext.gregs[REG_RIP];
     uint64_t rsp = ctx->uc_mcontext.gregs[REG_RSP];
@@ -69,9 +64,9 @@ static void sigsegv_handler(int sig, siginfo_t *info, void *ucontext) {
 
     /* Case 1: jumped/called to NULL (rip near 0) — return 0 to caller */
     if (rip < 0x10000) {
-        uint64_t ret_addr = *(uint64_t *)rsp;
         ctx->uc_mcontext.gregs[REG_RAX] = 0;
-        ctx->uc_mcontext.gregs[REG_RIP] = ret_addr;
+        ctx->uc_mcontext.gregs[REG_RAX] = 0;
+        ctx->uc_mcontext.gregs[REG_RIP] = *(uint64_t *)rsp;
         ctx->uc_mcontext.gregs[REG_RSP] = rsp + 8;
         return;
     }
@@ -98,8 +93,9 @@ static void sigsegv_handler(int sig, siginfo_t *info, void *ucontext) {
     raise(SIGSEGV);
 }
 
-/* ---------- SIGTRAP / SIGILL handler (NOTREACHED / IMMEDIATE_CRASH) ---------- */
+/* ── SIGTRAP/SIGILL: safety net for NOTREACHED/IMMEDIATE_CRASH ───── */
 static void crash_handler(int sig, siginfo_t *info, void *ucontext) {
+    (void)info;
     ucontext_t *ctx = (ucontext_t *)ucontext;
     uint64_t rip = ctx->uc_mcontext.gregs[REG_RIP];
     uint64_t rbp = ctx->uc_mcontext.gregs[REG_RBP];
@@ -143,7 +139,7 @@ static void crash_handler(int sig, siginfo_t *info, void *ucontext) {
     raise(sig);
 }
 
-/* ---------- sigaction() interception ---------- */
+/* ── sigaction interception: prevent crashpad from overriding us ──── */
 /*
  * Chrome's crashpad installs its own SIGSEGV/SIGTRAP/SIGILL handlers
  * on startup, overriding ours. We intercept sigaction() and silently
@@ -181,7 +177,7 @@ sighandler_t signal(int signum, sighandler_t handler) {
     return sa_old.sa_handler;
 }
 
-/* ---------- clone3() interception ---------- */
+/* ── clone3 interception: safety net for seccomp ─────────────────── */
 /*
  * Kernel 6.13+ prefers clone3() but Chrome 126's seccomp sandbox
  * blocks it. Returning ENOSYS forces glibc to fall back to clone().
@@ -210,7 +206,7 @@ long syscall(long number, ...) {
     return real_syscall(number, a1, a2, a3, a4, a5, a6);
 }
 
-/* ---------- constructor ---------- */
+/* ── constructor ─────────────────────────────────────────────────── */
 __attribute__((constructor(101)))
 static void init(void) {
     if (!real_sigaction_fn)
