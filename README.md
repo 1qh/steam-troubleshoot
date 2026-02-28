@@ -17,21 +17,23 @@ Normally this would just return an error, but Chrome's **crashpad** crash report
 
 The simplest fix — install the NVIDIA VA-API driver so `vaInitialize()` doesn't crash:
 
-```bash
-sudo apt install nvidia-vaapi-driver
-steam
-```
+| Distro | Command |
+|---|---|
+| Ubuntu / Debian / Linux Mint / Pop!_OS | `sudo apt install nvidia-vaapi-driver` |
+| Fedora | `sudo dnf install libva-nvidia-driver` |
+| Arch / Manjaro | `sudo pacman -S libva-nvidia-driver` |
+| openSUSE | `sudo zypper install nvidia-vaapi-driver` (community repo) |
+| Gentoo | `sudo emerge media-libs/nvidia-vaapi-driver` |
+| NixOS | Already included — no action needed |
 
-No code, no LD_PRELOAD, no wrappers. Steam launches normally.
-
-**Tested on:** Ubuntu 24.04 with kernel 6.17 and NVIDIA 590.48.01.
+Then just run `steam` normally. No code, no LD_PRELOAD, no wrappers.
 
 ## Fix 2: LD_PRELOAD library (fallback)
 
 If you can't install the VA-API driver (no root, distro doesn't package it, etc.):
 
 ```bash
-git clone https://github.com/huylq42/steam-troubleshoot.git
+git clone https://github.com/1qh/steam-troubleshoot.git
 cd steam-troubleshoot
 make
 LD_PRELOAD=$PWD/steam_cef_gpu_fix.so steam
@@ -72,9 +74,7 @@ Likely works on any combination of **kernel ≥ 6.13** + **NVIDIA driver ≥ 580
 
 ## Uninstall
 
-**Fix 1:** `sudo apt remove nvidia-vaapi-driver` (though there's no reason to remove it).
-
-**Fix 2:** Stop using `LD_PRELOAD` — no files inside Steam's directory are modified. Remove the alias from `~/.bashrc` if you added one.
+Stop using `LD_PRELOAD` — no files inside Steam's directory are modified. Remove the alias from `~/.bashrc` if you added one.
 
 ## Related Issues
 
