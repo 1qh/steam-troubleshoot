@@ -3,24 +3,20 @@
  *
  * Problem:
  *   Steam ships Chrome 126 (CEF). On newer Linux kernels (6.13+) with
- *   NVIDIA drivers 580+/590+, the GPU subprocess crashes on startup
- *   with SIGSEGV (exit_code=11) because function pointers in libcef.so's
- *   .bss section are never initialized. After 6 crashes, Chrome gives up:
+ *   NVIDIA drivers 580+/590+, the steamwebhelper zygote process calls
+ *   vaInitialize() from libva, which tries to invoke a VA-API driver
+ *   backend method through a vtable. Without a VA-API driver installed
+ *   (e.g., nvidia-vaapi-driver), this is a NULL function pointer →
+ *   SIGSEGV. Chrome's crashpad catches the signal and kills the process.
+ *   After 6 GPU process crashes, Chrome gives up:
  *     FATAL:gpu_data_manager_impl_private.cc(449) GPU process isn't usable.
  *   No Steam window ever appears.
  *
- * Root cause:
- *   libcef.so has ~283 function-pointer thunks that load an address from
- *   .bss (zero-initialized) and jump to it. On affected kernel+driver
- *   combinations, the constructors that should populate these pointers
- *   fail silently, leaving them as NULL → SIGSEGV on call.
+ * Simplest fix:
+ *   sudo apt install nvidia-vaapi-driver
  *
- *   Chrome's crashpad crash reporter also installs its own signal handlers
- *   that catch the fault and kill the process, so naive LD_PRELOAD signal
- *   handling doesn't work — crashpad overrides it on startup.
- *
- * Fix (this library):
- *   1. Install a SIGSEGV handler that returns 0 from NULL-pointer thunks
+ * This library (fallback fix):
+ *   1. Install a SIGSEGV handler that returns 0 from NULL-pointer calls
  *      instead of crashing.
  *   2. Intercept sigaction() to prevent crashpad from replacing our handler.
  *   3. (Safety net) Handle SIGTRAP/SIGILL from NOTREACHED()/IMMEDIATE_CRASH()
@@ -49,8 +45,6 @@
 #include <stdint.h>
 #include <errno.h>
 #include <sys/syscall.h>
-#include <errno.h>
-#include <sys/syscall.h>
 
 static int handlers_locked = 0;
 
@@ -64,7 +58,6 @@ static void sigsegv_handler(int sig, siginfo_t *info, void *ucontext) {
 
     /* Case 1: jumped/called to NULL (rip near 0) — return 0 to caller */
     if (rip < 0x10000) {
-        ctx->uc_mcontext.gregs[REG_RAX] = 0;
         ctx->uc_mcontext.gregs[REG_RAX] = 0;
         ctx->uc_mcontext.gregs[REG_RIP] = *(uint64_t *)rsp;
         ctx->uc_mcontext.gregs[REG_RSP] = rsp + 8;

@@ -7,7 +7,28 @@ Fix for Steam failing to launch on newer Linux kernels (6.13+) with NVIDIA drive
 FATAL:gpu_data_manager_impl_private.cc(449) GPU process isn't usable. Goodbye.
 ```
 
-## Quick Start
+## Root Cause
+
+Steam's steamwebhelper (Chrome 126) calls `vaInitialize()` from **libva** during early startup (in the zygote process). On systems without a VA-API driver backend, libva calls through a NULL function pointer at offset `0x78` in its driver vtable — the pointer that should have been populated by a backend driver (`*_drv_video.so`) was never set.
+
+Normally this would just return an error, but Chrome's **crashpad** crash reporter installs its own `SIGSEGV` handler that catches the fault and kills the entire process. After 6 GPU process crashes, Chrome gives up and Steam exits.
+
+## Fix 1: Install the VA-API driver (recommended)
+
+The simplest fix — install the NVIDIA VA-API driver so `vaInitialize()` doesn't crash:
+
+```bash
+sudo apt install nvidia-vaapi-driver
+steam
+```
+
+No code, no LD_PRELOAD, no wrappers. Steam launches normally.
+
+**Tested on:** Ubuntu 24.04 with kernel 6.17 and NVIDIA 590.48.01.
+
+## Fix 2: LD_PRELOAD library (fallback)
+
+If you can't install the VA-API driver (no root, distro doesn't package it, etc.):
 
 ```bash
 git clone https://github.com/huylq42/steam-troubleshoot.git
@@ -21,6 +42,22 @@ To make it permanent, add an alias to your `~/.bashrc`:
 echo 'alias steam="LD_PRELOAD=$HOME/steam-troubleshoot/steam_cef_gpu_fix.so steam"' >> ~/.bashrc
 ```
 
+### What the library does
+
+1. **SIGSEGV handler** — catches the NULL function pointer call in `vaInitialize()` and returns 0 instead of crashing. Also handles NULL-pointer dereferences gracefully.
+
+2. **sigaction() interception** — prevents Chrome's crashpad from overriding our signal handler. Without this, crashpad replaces our handler on startup and the fix doesn't work.
+
+3. **SIGTRAP/SIGILL handler** (safety net) — handles `NOTREACHED()` / `IMMEDIATE_CRASH()` assertions (`int3`/`ud2` instructions) by unwinding two stack frames.
+
+4. **clone3() → ENOSYS** (safety net) — forces glibc to fall back to `clone()` when kernel 6.13+ defaults to `clone3()`, which Chrome 126's seccomp sandbox blocks.
+
+### How LD_PRELOAD reaches steamwebhelper
+
+Steam's `_v2-entry-point` script captures `LD_PRELOAD` from the environment and forwards it into the pressure-vessel container via `--ld-preloads`. So `LD_PRELOAD=our.so steam` is all that's needed — the library loads into steamwebhelper and all its child processes automatically.
+
+Steam's integrity checking only covers files inside its installation directory. The fix lives outside it, so Steam updates won't break it.
+
 ## Tested On
 
 | Component | Version |
@@ -33,30 +70,11 @@ echo 'alias steam="LD_PRELOAD=$HOME/steam-troubleshoot/steam_cef_gpu_fix.so stea
 
 Likely works on any combination of **kernel ≥ 6.13** + **NVIDIA driver ≥ 580** where Steam's GPU process crashes.
 
-## What It Does
-
-A single `LD_PRELOAD` library (`steam_cef_gpu_fix.so`) that fixes three issues:
-
-### 1. Signal handler protection
-Chrome's crashpad crash reporter installs its own `SIGSEGV`/`SIGTRAP`/`SIGILL` handlers on startup, which catch faults and kill the process. We intercept `sigaction()` and `signal()` to prevent crashpad from overriding our handlers.
-
-### 2. NULL pointer survival
-Steam ships Chrome 126's `libcef.so` which has ~283 function-pointer thunks that load an address from `.bss` (zero-initialized memory) and jump to it. On newer kernels, the constructors that should initialize these pointers fail silently, leaving them as NULL. Our `SIGSEGV` handler catches the resulting fault and returns 0 from the thunk instead of crashing.
-
-For `NOTREACHED()` / `IMMEDIATE_CRASH()` assertions (`int3`/`ud2` instructions), we unwind two stack frames to skip both the crash stub and its caller — returning just one frame back causes infinite loops.
-
-### 3. clone3() → ENOSYS
-Kernel 6.13+ defaults to `clone3()` for process creation, but Chrome 126's seccomp sandbox doesn't allow it. We intercept `syscall(SYS_clone3, ...)` and return `ENOSYS`, which makes glibc fall back to the older `clone()` that the sandbox permits.
-
-## How It Works
-
-Steam's `_v2-entry-point` script already captures `LD_PRELOAD` from the environment and forwards it into the pressure-vessel container via `--ld-preloads`. So a simple `LD_PRELOAD=our.so steam` is all that's needed — the library gets loaded into steamwebhelper and all its child processes (zygote, GPU, renderer) automatically.
-
-Steam's integrity checking only covers files inside its installation directory. Our fix lives outside it, so Steam updates won't break it.
-
 ## Uninstall
 
-Just stop using `LD_PRELOAD` — no files inside Steam's directory are modified. Remove the alias from `~/.bashrc` if you added one.
+**Fix 1:** `sudo apt remove nvidia-vaapi-driver` (though there's no reason to remove it).
+
+**Fix 2:** Stop using `LD_PRELOAD` — no files inside Steam's directory are modified. Remove the alias from `~/.bashrc` if you added one.
 
 ## Related Issues
 
