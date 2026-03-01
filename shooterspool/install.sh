@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install ShootersPool on Linux (Wine 11 + native Wayland)
+# Install ShootersPool on Linux (Wine 11 + native Wayland, fullscreen)
 #
 # Usage: ./install.sh path/to/ShootersPool-1.10.4_Setup.exe
 set -euo pipefail
@@ -8,9 +8,9 @@ SETUP_EXE="${1:?Usage: $0 path/to/ShootersPool-Setup.exe}"
 SETUP_EXE="$(realpath "$SETUP_EXE")"
 [ -f "$SETUP_EXE" ] || { echo "Not found: $SETUP_EXE"; exit 1; }
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PREFIX="$HOME/.local/share/shooterspool"
 GAME_DIR="$PREFIX/drive_c/Program Files (x86)/ShootersPool"
-OPENAL_URL="https://github.com/kcat/openal-soft/releases/download/1.24.2/openal-soft-1.24.2-bin.zip"
 
 info() { echo -e "\033[0;32m[+]\033[0m $*"; }
 fail() { echo -e "\033[0;31m[x]\033[0m $*"; exit 1; }
@@ -35,6 +35,10 @@ which winetricks &>/dev/null || {
     info "Installing winetricks..."
     sudo apt install -y winetricks
 }
+dpkg -s gcc-mingw-w64-i686 &>/dev/null || {
+    info "Installing MinGW cross-compiler..."
+    sudo apt install -y gcc-mingw-w64-i686
+}
 info "Wine: $(wine --version)"
 
 # ── Clean prefix ──────────────────────────────────────────────────
@@ -58,15 +62,13 @@ WINEPREFIX="$PREFIX" wineserver -w 2>/dev/null
 [ -f "$GAME_DIR/bin/ShootersPool.exe" ] || fail "Installation failed"
 info "Game installed at: $GAME_DIR"
 
-# ── OpenAL Soft ───────────────────────────────────────────────────
-info "Installing OpenAL Soft..."
-TMPD=$(mktemp -d)
-wget -qO "$TMPD/openal.zip" "$OPENAL_URL"
-unzip -qo "$TMPD/openal.zip" -d "$TMPD"
-cp "$TMPD/openal-soft-1.24.2-bin/bin/Win32/soft_oal.dll" "$GAME_DIR/bin/"
-cp "$GAME_DIR/bin/soft_oal.dll" "$GAME_DIR/bin/OpenAL32.dll"
-cp "$GAME_DIR/bin/soft_oal.dll" "$PREFIX/drive_c/windows/syswow64/OpenAL32.dll"
-rm -rf "$TMPD"
+# ── Fullscreen DLL (proxy version.dll) ────────────────────────────
+info "Building fullscreen helper..."
+i686-w64-mingw32-gcc -shared -O2 \
+    -o "$GAME_DIR/bin/version.dll" \
+    "$SCRIPT_DIR/fullscreen.c" \
+    -Wl,--subsystem,windows,--kill-at
+info "Fullscreen DLL installed"
 
 # ── Registry (direct file write — no wineserver race) ────────────
 info "Setting registry..."
