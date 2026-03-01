@@ -31,9 +31,9 @@ dpkg -s libegl1:i386 &>/dev/null || {
     info "Installing 32-bit EGL..."
     sudo apt install -y libegl1:i386
 }
-command -v 7z &>/dev/null || {
-    info "Installing 7z..."
-    sudo apt install -y p7zip-full
+which winetricks &>/dev/null || {
+    info "Installing winetricks..."
+    sudo apt install -y winetricks
 }
 info "Wine: $(wine --version)"
 
@@ -42,17 +42,21 @@ WINEPREFIX="$PREFIX" wineserver -k 2>/dev/null || true
 [ -d "$PREFIX" ] && rm -rf "$PREFIX"
 
 info "Creating Wine prefix..."
-env -u DISPLAY -u WAYLAND_DISPLAY WINEPREFIX="$PREFIX" WINEDLLOVERRIDES="mscoree=d;mshtml=d" wineboot -u 2>/dev/null
+env -u DISPLAY -u WAYLAND_DISPLAY WINEPREFIX="$PREFIX" wineboot -u 2>/dev/null
 WINEPREFIX="$PREFIX" wineserver -w 2>/dev/null
 
-# ── Extract game (7z — skips running NSIS through Wine) ──────────
-info "Extracting game files..."
-mkdir -p "$GAME_DIR"
-7z x -o"$GAME_DIR" "$SETUP_EXE" \
-    -xr'!Products' -xr'!\$PLUGINSDIR' -xr'!*.nsis' -y >/dev/null
+# ── Core fonts (fixes CEF/Chromium dwrite crash) ──────────────────
+info "Installing Windows core fonts..."
+WINEPREFIX="$PREFIX" winetricks -q corefonts 2>/dev/null
+WINEPREFIX="$PREFIX" wineserver -k 2>/dev/null || true
 
-[ -f "$GAME_DIR/bin/ShootersPool.exe" ] || fail "Extraction failed"
-info "Game extracted to: $GAME_DIR"
+# ── Install game (NSIS silent — headless) ─────────────────────────
+info "Installing game (silent — takes a few minutes)..."
+env -u DISPLAY -u WAYLAND_DISPLAY WINEPREFIX="$PREFIX" wine "$SETUP_EXE" /S 2>/dev/null
+WINEPREFIX="$PREFIX" wineserver -w 2>/dev/null
+
+[ -f "$GAME_DIR/bin/ShootersPool.exe" ] || fail "Installation failed"
+info "Game installed at: $GAME_DIR"
 
 # ── OpenAL Soft ───────────────────────────────────────────────────
 info "Installing OpenAL Soft..."
