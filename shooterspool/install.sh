@@ -42,7 +42,7 @@ WINEPREFIX="$PREFIX" wineserver -k 2>/dev/null || true
 [ -d "$PREFIX" ] && rm -rf "$PREFIX"
 
 info "Creating Wine prefix..."
-env -u DISPLAY WINEPREFIX="$PREFIX" wineboot -u 2>/dev/null
+env -u DISPLAY -u WAYLAND_DISPLAY WINEPREFIX="$PREFIX" WINEDLLOVERRIDES="mscoree=d;mshtml=d" wineboot -u 2>/dev/null
 WINEPREFIX="$PREFIX" wineserver -w 2>/dev/null
 
 # ── Extract game (7z — skips running NSIS through Wine) ──────────
