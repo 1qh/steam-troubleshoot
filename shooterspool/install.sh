@@ -35,10 +35,6 @@ which winetricks &>/dev/null || {
     info "Installing winetricks..."
     sudo apt install -y winetricks
 }
-dpkg -s gcc-mingw-w64-i686 &>/dev/null || {
-    info "Installing MinGW cross-compiler..."
-    sudo apt install -y gcc-mingw-w64-i686
-}
 info "Wine: $(wine --version)"
 
 # ── Clean prefix ──────────────────────────────────────────────────
@@ -62,13 +58,9 @@ WINEPREFIX="$PREFIX" wineserver -w 2>/dev/null
 [ -f "$GAME_DIR/bin/ShootersPool.exe" ] || fail "Installation failed"
 info "Game installed at: $GAME_DIR"
 
-# ── Fullscreen DLL (proxy version.dll) ────────────────────────────
-info "Building fullscreen helper..."
-i686-w64-mingw32-gcc -shared -O2 \
-    -o "$GAME_DIR/bin/version.dll" \
-    "$SCRIPT_DIR/fullscreen.c" \
-    -Wl,--subsystem,windows,--kill-at
-info "Fullscreen DLL installed"
+# ── Fullscreen DLL (pre-built proxy version.dll) ─────────────────
+info "Installing fullscreen helper..."
+cp "$SCRIPT_DIR/version.dll" "$GAME_DIR/bin/version.dll"
 
 # ── Registry (direct file write — no wineserver race) ────────────
 info "Setting registry..."
@@ -91,6 +83,9 @@ cat >> "$PREFIX/user.reg" << EOF
 
 [Software\\\\Wine\\\\X11 Driver] ${TS}
 "Decorated"="N"
+
+[Software\\\\Wine\\\\DllOverrides] ${TS}
+"version"="native,builtin"
 EOF
 
 info "Done. Run with: ./run.sh"

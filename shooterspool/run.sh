@@ -27,5 +27,4 @@ exec env -u DISPLAY \
     WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
     XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
     WINEFSYNC=1 \
-    WINEDLLOVERRIDES="version=n,b" \
     wine "$EXE"
