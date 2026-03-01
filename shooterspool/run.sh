@@ -11,8 +11,6 @@ GAME_BIN="$PREFIX/drive_c/Program Files (x86)/ShootersPool/bin"
 
 [ -f "$GAME_BIN/$EXE" ] || { echo "Not found: $GAME_BIN/$EXE"; exit 1; }
 
-wineserver -k 2>/dev/null; sleep 1
-
 cd "$GAME_BIN"
 exec env -u DISPLAY \
     WINEPREFIX="$PREFIX" \
